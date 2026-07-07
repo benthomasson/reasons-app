@@ -41,6 +41,23 @@ This matters because it's fundamentally different from just appending facts to a
 
 Every tool except `domains` accepts an optional `domain` parameter to target a non-default belief database.
 
+### Full parameter schemas (skip tools/list discovery)
+
+All parameters are strings unless noted. Optional params have defaults shown.
+
+- **domains()** — no params
+- **search(query, format?="markdown", depth?=1, domain?)** — `depth` (int): how many hops to expand neighbors
+- **show(node_id, domain?)**
+- **explain(node_id, domain?)**
+- **tree(node_id, direction?="up", max_depth?, domain?)** — `direction`: "up"|"down"|"both"; `max_depth` (int)
+- **list(status?, premises?=false, has_dependents?=false, by_impact?=false, domain?)** — `premises`, `has_dependents`, `by_impact` are bools
+- **add(node_id, text, sl?, unless?, source?, source_url?, label?, domain?)** — `sl` and `unless` are comma-separated node IDs, no spaces
+- **retract(node_id, reason?, domain?)**
+- **assert_node(node_id, domain?)**
+- **challenge(target_id, reason, challenge_id?, domain?)**
+- **defend(target_id, challenge_id, reason, defense_id?, domain?)**
+- **nogood(node_ids, domain?)** — `node_ids` is a JSON array of strings
+
 ## Workflow patterns
 
 **Choosing `unless` vs. `challenge`/`defend` for exceptions.** Both encode "this doesn't hold after all, unless something defeats the defeater" — the difference is *when you learn about the exception*:
