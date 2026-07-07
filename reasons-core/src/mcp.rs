@@ -985,10 +985,16 @@ pub async fn run_server(db_path: &Path) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+pub struct TlsConfig {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+}
+
 pub async fn run_http_server(
     db_path: PathBuf,
     addr: SocketAddr,
     cancel_token: CancellationToken,
+    tls: Option<TlsConfig>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService,
@@ -1016,14 +1022,31 @@ pub async fn run_http_server(
     let app = axum::Router::new()
         .route("/mcp", axum::routing::any_service(service));
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    eprintln!("Reasons MCP server listening on http://{}/mcp", addr);
+    match tls {
+        Some(tls_config) => {
+            let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                &tls_config.cert_path,
+                &tls_config.key_path,
+            ).await?;
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            cancel_token.cancelled().await;
-        })
-        .await?;
+            let scheme = "https";
+            eprintln!("Reasons MCP server listening on {}://{}/mcp", scheme, addr);
+
+            axum_server::bind_rustls(addr, rustls_config)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        None => {
+            eprintln!("Reasons MCP server listening on http://{}/mcp", addr);
+
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    cancel_token.cancelled().await;
+                })
+                .await?;
+        }
+    }
 
     Ok(())
 }

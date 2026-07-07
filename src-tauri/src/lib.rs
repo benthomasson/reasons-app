@@ -3,6 +3,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use reasons_core::mcp::TlsConfig;
+
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
@@ -27,6 +29,17 @@ fn default_db_path() -> PathBuf {
         .join("reasons.db")
 }
 
+fn find_tls_certs() -> Option<TlsConfig> {
+    let cert_dir = dirs::home_dir()?.join(".reasons").join("certs");
+    let cert_path = cert_dir.join("localhost+1.pem");
+    let key_path = cert_dir.join("localhost+1-key.pem");
+    if cert_path.exists() && key_path.exists() {
+        Some(TlsConfig { cert_path, key_path })
+    } else {
+        None
+    }
+}
+
 async fn start_mcp_server(db_path: PathBuf, port: u16, cancel_token: CancellationToken) {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
 
@@ -37,7 +50,9 @@ async fn start_mcp_server(db_path: PathBuf, port: u16, cancel_token: Cancellatio
         }
     }
 
-    if let Err(e) = reasons_core::mcp::run_http_server(db_path, addr, cancel_token).await {
+    let tls = find_tls_certs();
+
+    if let Err(e) = reasons_core::mcp::run_http_server(db_path, addr, cancel_token, tls).await {
         eprintln!("MCP server error: {}", e);
     }
 }
@@ -51,8 +66,10 @@ pub fn run() {
             let db_path = default_db_path();
             let port: u16 = 6519;
             let cancel_token = CancellationToken::new();
+            let has_tls = find_tls_certs().is_some();
+            let scheme = if has_tls { "https" } else { "http" };
 
-            let status_item = MenuItemBuilder::new(format!("Status: Running on port {}", port))
+            let status_item = MenuItemBuilder::new(format!("Status: {} on port {}", scheme, port))
                 .id("status")
                 .enabled(false)
                 .build(app)?;
