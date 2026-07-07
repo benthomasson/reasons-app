@@ -22,6 +22,7 @@ struct ServerState {
 struct AppState {
     server: Arc<Mutex<ServerState>>,
     install_item: tauri::menu::MenuItem<tauri::Wry>,
+    install_code_item: Option<tauri::menu::MenuItem<tauri::Wry>>,
 }
 
 fn default_db_path() -> PathBuf {
@@ -49,6 +50,40 @@ fn reasons_binary_path() -> PathBuf {
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .join("reasons")
+}
+
+fn has_claude_code() -> bool {
+    std::process::Command::new("which")
+        .arg("claude")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn is_installed_in_claude_code() -> bool {
+    std::process::Command::new("claude")
+        .args(["mcp", "get", "reasons"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn install_to_claude_code(db_path: &PathBuf) -> Result<(), String> {
+    let binary = reasons_binary_path();
+    let binary_str = binary.to_string_lossy().to_string();
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let output = std::process::Command::new("claude")
+        .args(["mcp", "add", "--scope", "user", "reasons", "--", &binary_str, "mcp", "--db", &db_str])
+        .output()
+        .map_err(|e| format!("Failed to run claude: {}", e))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("claude mcp add failed: {}", stderr))
+    }
 }
 
 fn install_to_claude(db_path: &PathBuf) -> Result<(), String> {
@@ -130,15 +165,35 @@ pub fn run() {
                 .id("install_claude")
                 .enabled(!installed)
                 .build(app)?;
+
+            let install_code_item = if has_claude_code() {
+                let installed_code = is_installed_in_claude_code();
+                let code_label = if installed_code {
+                    "Claude Code: Installed ✓"
+                } else {
+                    "Install in Claude Code"
+                };
+                Some(MenuItemBuilder::new(code_label)
+                    .id("install_claude_code")
+                    .enabled(!installed_code)
+                    .build(app)?)
+            } else {
+                None
+            };
+
             let quit_item = MenuItemBuilder::new("Quit")
                 .id("quit")
                 .build(app)?;
 
-            let menu = MenuBuilder::new(app)
+            let mut menu = MenuBuilder::new(app)
                 .item(&status_item)
                 .item(&db_item)
                 .separator()
-                .item(&install_item)
+                .item(&install_item);
+            if let Some(ref code_item) = install_code_item {
+                menu = menu.item(code_item);
+            }
+            let menu = menu
                 .separator()
                 .item(&quit_item)
                 .build()?;
@@ -183,6 +238,29 @@ pub fn run() {
                                 }
                             });
                         }
+                        "install_claude_code" => {
+                            let state = app_handle.state::<AppState>();
+                            let server = state.server.clone();
+                            let app = app_handle.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let s = server.lock().await;
+                                let db_path = s.db_path.clone();
+                                drop(s);
+                                match install_to_claude_code(&db_path) {
+                                    Ok(()) => {
+                                        eprintln!("Installed reasons MCP server in Claude Code");
+                                        let state = app.state::<AppState>();
+                                        if let Some(ref item) = state.install_code_item {
+                                            let _ = item.set_text("Claude Code: Installed ✓");
+                                            let _ = item.set_enabled(false);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to install in Claude Code: {}", e);
+                                    }
+                                }
+                            });
+                        }
                         _ => {}
                     }
                 })
@@ -196,6 +274,7 @@ pub fn run() {
                     cancel_token: cancel_token.clone(),
                 })),
                 install_item: install_item.clone(),
+                install_code_item: install_code_item.clone(),
             };
             app.manage(state);
 
