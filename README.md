@@ -1,114 +1,75 @@
-# reasons
+# Reasons.app
 
-A Truth Maintenance System (TMS) for managing justified beliefs with dependency tracking, contradiction detection, and truth-value propagation.
+A macOS menu bar app that runs a [Reasons](https://github.com/benthomasson/reasons-rust) MCP server — a justification-based truth maintenance system (JTMS) for managing beliefs with dependency tracking, contradiction detection, and truth-value propagation.
 
-Rust port of [ftl-reasons](https://github.com/benthomasson/ftl-reasons). Single static binary, zero runtime dependencies.
+Reasons.app manages the MCP server lifecycle and provides one-click installation into Claude Desktop and Claude Code. It supports multiple databases (domains) so a single MCP endpoint can serve beliefs from different knowledge areas.
 
 ## Install
-
-### Homebrew
-
-```bash
-brew tap benthomasson/tap
-brew install reasons
-```
 
 ### From source
 
 ```bash
-cargo install --path .
+cargo install tauri-cli
+cargo tauri build
 ```
 
-### From GitHub Releases
+The built `.app` bundle will be in `src-tauri/target/release/bundle/macos/`.
 
-Download a prebuilt binary from [Releases](https://github.com/benthomasson/reasons-rust/releases) for your platform.
-
-## Quick start
+### Development
 
 ```bash
-# Initialize a database
-reasons init
-
-# Add some beliefs
-reasons add climate-change "Global temperatures are rising" --source "NASA"
-reasons add ice-melting "Arctic ice is melting" --sl climate-change
-reasons add sea-level "Sea levels are rising" --sl ice-melting
-
-# Inspect the network
-reasons show climate-change
-reasons tree sea-level --direction up
-reasons explain sea-level
-
-# Retract a belief and watch the cascade
-reasons retract climate-change --reason "Hypothetical exercise"
-reasons list --status OUT
-
-# Restore it
-reasons assert climate-change
+cargo tauri dev
 ```
 
-## Core concepts
+## Features
 
-**Nodes** are beliefs with a truth value (IN or OUT) and optional metadata (source, URL, timestamps).
+- **Menu bar app** — runs as a macOS tray icon (no Dock icon, no main window)
+- **Auto-start MCP server** — HTTP transport on `localhost:6519`
+- **Multi-domain support** — serve multiple reasons databases through one MCP endpoint
+- **One-click install** — register with Claude Desktop or Claude Code from the tray menu
+- **Domain configuration** — `~/.reasons/domains.toml` (auto-created on first run)
 
-**Justifications** link nodes via support lists (antecedents that must be IN) and outlists (nodes that must be OUT). A node with at least one valid justification is IN; otherwise it's OUT. Nodes without justifications are **premises** that keep their truth value directly.
+## Architecture
 
-**Propagation** cascades truth-value changes through the dependency graph using BFS. Retracting a premise automatically flips all dependent nodes to OUT.
+Cargo workspace with three crates:
 
-**Challenges** create a new node added to the target's outlist, flipping it OUT. **Defenses** counter-challenge the challenge, restoring the original.
+| Crate | Purpose |
+|-------|---------|
+| `reasons-core` | Library — TMS engine, database, MCP server, domain config |
+| `reasons-cli` | Binary `reasons` — CLI and stdio MCP server |
+| `src-tauri` | Tauri v2 app — menu bar, HTTP MCP server, installer |
 
-**Nogoods** record contradictions. When all nodes in a nogood are IN, dependency-directed backtracking retracts the least-entrenched premise.
+## Domains
 
-## Commands
+Domains are configured in `~/.reasons/domains.toml`:
 
-### Query
+```toml
+default = "product"
 
-| Command | Description |
-|---------|-------------|
-| `show <ID>` | Node details, justifications, and dependents |
-| `explain <ID>` | Recursive trace of why a node is IN or OUT |
-| `search <QUERY>` | Full-text search with progressive relaxation and neighbor expansion |
-| `lookup <QUERY>` | Simple substring search |
-| `list` | List nodes with `--status`, `--premises`, `--has-dependents`, `--by-impact` filters |
-| `tree <ID>` | Dependency tree with `--direction up\|down\|both` and `--depth` |
+[[domain]]
+name = "product"
+path = "~/reasons.db"
 
-### Write
+[[domain]]
+name = "code"
+path = "~/git/my-project/reasons.db"
 
-| Command | Description |
-|---------|-------------|
-| `add <ID> <TEXT>` | Add a premise; use `--sl a,b` for derived nodes |
-| `add-justification <ID> --sl a,b` | Add justification to existing node |
-| `remove-justification <ID> --index N` | Remove justification by index |
-| `retract <ID>` | Mark OUT with cascade propagation |
-| `assert <ID>` | Restore a retracted node to IN |
-| `update <ID>` | Modify text, source, or source URL |
-| `challenge <ID> --reason TEXT` | Challenge a belief |
-| `defend <ID> --challenge-id CID --reason TEXT` | Defend against a challenge |
-| `supersede --old-id OLD --new-id NEW` | Mark a belief as superseded |
-| `nogood <ID> [ID ...]` | Record contradiction with auto-backtracking |
+[[domain]]
+name = "research"
+path = "~/git/papers/reasons.db"
+```
 
-### Management
+All MCP tools accept an optional `domain` parameter. When omitted, the default domain is used. The `domains` tool lists all configured domains.
 
-| Command | Description |
-|---------|-------------|
-| `init` | Create a new `reasons.db` |
-| `status` | Database summary |
-| `propagate` | Force full truth-value recomputation |
-| `trace <ID>` | Find all supporting premises |
-| `convert-to-premise <ID>` | Strip justifications from a derived node |
-| `export [-o FILE]` | Export as JSON |
-| `export-markdown [-o FILE]` | Export as markdown |
-| `import-json <FILE>` | Import from JSON |
-| `import-beliefs <FILE>` | Import from markdown |
-| `log [--limit N]` | Show propagation log |
+## MCP Server
 
-## MCP server
-
-Run as an [MCP](https://modelcontextprotocol.io) server over stdio for use with Claude Desktop or Claude Code:
+### Stdio transport (Claude Desktop / Claude Code)
 
 ```bash
 reasons mcp --db /path/to/reasons.db
 ```
+
+The stdio server reads `~/.reasons/domains.toml` and serves all configured domains, with the `--db` path included as an additional domain if not already listed.
 
 Claude Desktop configuration (`claude_desktop_config.json`):
 
@@ -123,11 +84,35 @@ Claude Desktop configuration (`claude_desktop_config.json`):
 }
 ```
 
-Exposes 11 tools: `search`, `show`, `explain`, `tree`, `list`, `add`, `retract`, `assert_node`, `challenge`, `defend`, `nogood`.
+### HTTP transport (Reasons.app)
 
-## Database
+The Tauri app runs an HTTP MCP server on `http://localhost:6519/mcp` using Streamable HTTP transport.
 
-All data is stored in a single `reasons.db` SQLite file (default: current directory, override with `--db`). The schema is compatible with the Python [ftl-reasons](https://github.com/benthomasson/ftl-reasons) version.
+### Tools
+
+| Tool | Purpose |
+|------|---------|
+| `domains` | List configured domains and their database paths |
+| `search` | Full-text search with neighbor expansion |
+| `show` | Node details, justifications, and dependents |
+| `explain` | Trace why a node is IN or OUT |
+| `tree` | Dependency tree visualization |
+| `list` | List nodes with status/type/impact filters |
+| `add` | Create a premise or derived node |
+| `retract` | Mark a node OUT with cascading propagation |
+| `assert_node` | Restore a retracted node to IN |
+| `challenge` | Attack a belief with a counter-argument |
+| `defend` | Counter a challenge to restore a belief |
+| `nogood` | Record a contradiction with auto-backtracking |
+
+## CLI
+
+The `reasons` binary includes a full CLI for direct database operations. See [`reasons-rust`](https://github.com/benthomasson/reasons-rust) for CLI documentation, or run `reasons --help`.
+
+## Related Projects
+
+- [reasons-rust](https://github.com/benthomasson/reasons-rust) — standalone CLI and MCP server (this app is forked from it)
+- [ftl-reasons](https://github.com/benthomasson/ftl-reasons) — original Python implementation with LLM-powered commands
 
 ## License
 
