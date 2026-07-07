@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -19,6 +20,9 @@ struct SearchParams {
     #[schemars(description = "Neighbor expansion depth (default 1)")]
     #[serde(default = "default_depth")]
     depth: usize,
+    #[schemars(description = "Domain name (database) to query. Use 'domains' tool to list available domains.")]
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 fn default_markdown() -> String { "markdown".to_string() }
@@ -28,6 +32,9 @@ fn default_depth() -> usize { 1 }
 struct NodeIdParams {
     #[schemars(description = "The node ID to look up")]
     node_id: String,
+    #[schemars(description = "Domain name (database) to query. Use 'domains' tool to list available domains.")]
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -39,6 +46,9 @@ struct TreeParams {
     direction: String,
     #[schemars(description = "Maximum depth to traverse")]
     max_depth: Option<usize>,
+    #[schemars(description = "Domain name (database) to query. Use 'domains' tool to list available domains.")]
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 fn default_up() -> String { "up".to_string() }
@@ -56,6 +66,9 @@ struct ListParams {
     #[schemars(description = "Sort by number of dependents (most impactful first)")]
     #[serde(default)]
     by_impact: bool,
+    #[schemars(description = "Domain name (database) to query. Use 'domains' tool to list available domains.")]
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -74,6 +87,9 @@ struct AddParams {
     source_url: Option<String>,
     #[schemars(description = "Label for the justification")]
     label: Option<String>,
+    #[schemars(description = "Domain name (database) to query. Use 'domains' tool to list available domains.")]
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -82,6 +98,9 @@ struct RetractParams {
     node_id: String,
     #[schemars(description = "Reason for retraction")]
     reason: Option<String>,
+    #[schemars(description = "Domain name (database) to query. Use 'domains' tool to list available domains.")]
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -92,6 +111,9 @@ struct ChallengeParams {
     reason: String,
     #[schemars(description = "Custom ID for the challenge node (defaults to challenge-<target_id>)")]
     challenge_id: Option<String>,
+    #[schemars(description = "Domain name (database) to query. Use 'domains' tool to list available domains.")]
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -104,17 +126,33 @@ struct DefendParams {
     reason: String,
     #[schemars(description = "Custom ID for the defense node (defaults to defense-<challenge_id>)")]
     defense_id: Option<String>,
+    #[schemars(description = "Domain name (database) to query. Use 'domains' tool to list available domains.")]
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct NogoodParams {
     #[schemars(description = "List of contradicting node IDs")]
     node_ids: Vec<String>,
+    #[schemars(description = "Domain name (database) to query. Use 'domains' tool to list available domains.")]
+    #[serde(default)]
+    domain: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct EmptyParams {}
+
+#[derive(Clone)]
+struct DomainInfo {
+    path: PathBuf,
 }
 
 #[derive(Clone)]
 pub struct ReasonsServer {
-    conn: Arc<Mutex<Connection>>,
+    domains: Arc<Mutex<std::collections::HashMap<String, Connection>>>,
+    domain_paths: Arc<std::collections::HashMap<String, DomainInfo>>,
+    default_domain: String,
 }
 
 const STOP_WORDS: &[&str] = &[
@@ -134,57 +172,108 @@ const STOP_WORDS: &[&str] = &[
 
 #[tool_router(server_handler)]
 impl ReasonsServer {
+    fn resolve_domain(&self, domain: Option<&str>) -> Result<String, String> {
+        let name = domain.unwrap_or(&self.default_domain).to_string();
+        if self.domain_paths.contains_key(&name) {
+            Ok(name)
+        } else {
+            Err(format!("Error: unknown domain '{}'. Use the 'domains' tool to list available domains.", name))
+        }
+    }
+
+    #[tool(description = "List all configured domains (databases) with their paths and default status.")]
+    async fn domains(&self, Parameters(_params): Parameters<EmptyParams>) -> String {
+        let paths = self.domain_paths.clone();
+        let default = self.default_domain.clone();
+        let mut out = String::from("# Domains\n\n");
+        for (name, info) in paths.as_ref() {
+            let marker = if name == &default { " (default)" } else { "" };
+            out.push_str(&format!("- **{}**{}: `{}`\n", name, marker, info.path.display()));
+        }
+        out
+    }
+
     #[tool(description = "Search beliefs using full-text search with neighbor expansion. Returns matching belief nodes with their truth values.")]
     async fn search(&self, Parameters(params): Parameters<SearchParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            search_impl(&conn, &params.query, &params.format, params.depth)
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            search_impl(conn, &params.query, &params.format, params.depth)
         }).await.unwrap()
     }
 
     #[tool(description = "Show detailed information about a belief node including its text, source, justifications, and dependents.")]
     async fn show(&self, Parameters(params): Parameters<NodeIdParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            show_impl(&conn, &params.node_id)
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            show_impl(conn, &params.node_id)
         }).await.unwrap()
     }
 
     #[tool(description = "Explain why a belief node is IN or OUT by tracing through its justification chain.")]
     async fn explain(&self, Parameters(params): Parameters<NodeIdParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            explain_impl(&conn, &params.node_id)
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            explain_impl(conn, &params.node_id)
         }).await.unwrap()
     }
 
     #[tool(description = "Show a dependency tree visualization for a belief node using box-drawing characters.")]
     async fn tree(&self, Parameters(params): Parameters<TreeParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            tree_impl(&conn, &params.node_id, &params.direction, params.max_depth)
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            tree_impl(conn, &params.node_id, &params.direction, params.max_depth)
         }).await.unwrap()
     }
 
     #[tool(description = "List belief nodes with optional filters by status, type, and impact.")]
     async fn list(&self, Parameters(params): Parameters<ListParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            list_impl(&conn, params.status.as_deref(), params.premises, params.has_dependents, params.by_impact)
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            list_impl(conn, params.status.as_deref(), params.premises, params.has_dependents, params.by_impact)
         }).await.unwrap()
     }
 
     #[tool(description = "Add a new belief node to the truth maintenance system. Can be a premise (no justification) or derived (with --sl antecedents).")]
     async fn add(&self, Parameters(params): Parameters<AddParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            add_impl(&conn, &params.node_id, &params.text, params.sl.as_deref(),
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            add_impl(conn, &params.node_id, &params.text, params.sl.as_deref(),
                 params.unless.as_deref(), params.source.as_deref(),
                 params.source_url.as_deref(), params.label.as_deref())
         }).await.unwrap()
@@ -192,46 +281,71 @@ impl ReasonsServer {
 
     #[tool(description = "Retract a belief node, marking it OUT with cascading truth-value propagation to dependents.")]
     async fn retract(&self, Parameters(params): Parameters<RetractParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            retract_impl(&conn, &params.node_id, params.reason.as_deref())
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            retract_impl(conn, &params.node_id, params.reason.as_deref())
         }).await.unwrap()
     }
 
     #[tool(description = "Re-assert a previously retracted belief node, restoring it to IN with cascading propagation.")]
     async fn assert_node(&self, Parameters(params): Parameters<NodeIdParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            assert_impl(&conn, &params.node_id)
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            assert_impl(conn, &params.node_id)
         }).await.unwrap()
     }
 
     #[tool(description = "Challenge a belief by creating a challenge node that makes the target go OUT.")]
     async fn challenge(&self, Parameters(params): Parameters<ChallengeParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            challenge_impl(&conn, &params.target_id, &params.reason, params.challenge_id.as_deref())
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            challenge_impl(conn, &params.target_id, &params.reason, params.challenge_id.as_deref())
         }).await.unwrap()
     }
 
     #[tool(description = "Defend a belief against a challenge by creating a defense node that counters the challenge, restoring the original belief to IN.")]
     async fn defend(&self, Parameters(params): Parameters<DefendParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            defend_impl(&conn, &params.target_id, &params.challenge_id, &params.reason, params.defense_id.as_deref())
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            defend_impl(conn, &params.target_id, &params.challenge_id, &params.reason, params.defense_id.as_deref())
         }).await.unwrap()
     }
 
     #[tool(description = "Record a contradiction between belief nodes. If all nodes are IN, runs dependency-directed backtracking to retract the least-entrenched premise.")]
     async fn nogood(&self, Parameters(params): Parameters<NogoodParams>) -> String {
-        let conn = self.conn.clone();
+        let domain = match self.resolve_domain(params.domain.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return e,
+        };
+        let domains = self.domains.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            nogood_impl(&conn, &params.node_ids)
+            let domains = domains.lock().unwrap();
+            let conn = &domains[&domain];
+            nogood_impl(conn, &params.node_ids)
         }).await.unwrap()
     }
 }
@@ -973,11 +1087,44 @@ fn nogood_impl(conn: &Connection, node_ids: &[String]) -> String {
     out
 }
 
+fn build_server(domain_list: &[(String, PathBuf)], default_domain: &str) -> Result<ReasonsServer, Box<dyn std::error::Error>> {
+    let mut domains = HashMap::new();
+    let mut paths = HashMap::new();
+    for (name, path) in domain_list {
+        let conn = db::open_db(path)?;
+        domains.insert(name.clone(), conn);
+        paths.insert(name.clone(), DomainInfo { path: path.clone() });
+    }
+    Ok(ReasonsServer {
+        domains: Arc::new(Mutex::new(domains)),
+        domain_paths: Arc::new(paths),
+        default_domain: default_domain.to_string(),
+    })
+}
+
 pub async fn run_server(db_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = db::open_db(db_path)?;
-    let server = ReasonsServer {
-        conn: Arc::new(Mutex::new(conn)),
-    };
+    use crate::config;
+
+    config::ensure_default_config();
+    let (mut domain_list, mut default_domain) = config::load_domains();
+
+    let cli_path = db_path.canonicalize().unwrap_or_else(|_| db_path.to_path_buf());
+    let has_cli_db = domain_list.iter().any(|(_, p)| {
+        p.canonicalize().unwrap_or_else(|_| p.clone()) == cli_path
+    });
+    if !has_cli_db {
+        domain_list.insert(0, ("default".to_string(), db_path.to_path_buf()));
+        default_domain = "default".to_string();
+    }
+
+    for (name, path) in &domain_list {
+        if !path.exists() {
+            eprintln!("Initializing database for domain '{}': {}", name, path.display());
+            db::init_db(path)?;
+        }
+    }
+
+    let server = build_server(&domain_list, &default_domain)?;
     let service = server.serve(stdio()).await
         .map_err(|e| format!("Failed to start MCP server: {}", e))?;
     service.waiting().await
@@ -986,7 +1133,8 @@ pub async fn run_server(db_path: &Path) -> Result<(), Box<dyn std::error::Error>
 }
 
 pub async fn run_http_server(
-    db_path: PathBuf,
+    domain_list: Vec<(String, PathBuf)>,
+    default_domain: String,
     addr: SocketAddr,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1003,11 +1151,8 @@ pub async fn run_http_server(
 
     let service = StreamableHttpService::new(
         move || {
-            let conn = db::open_db(&db_path)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-            Ok(ReasonsServer {
-                conn: Arc::new(Mutex::new(conn)),
-            })
+            build_server(&domain_list, &default_domain)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
         },
         session_manager,
         config,

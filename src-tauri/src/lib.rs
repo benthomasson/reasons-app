@@ -11,11 +11,10 @@ use tauri::{
 };
 
 const CLAUDE_CONFIG_PATH: &str = "Library/Application Support/Claude/claude_desktop_config.json";
-
 struct ServerState {
     running: bool,
     port: u16,
-    db_path: PathBuf,
+    default_db_path: PathBuf,
     cancel_token: CancellationToken,
 }
 
@@ -23,12 +22,6 @@ struct AppState {
     server: Arc<Mutex<ServerState>>,
     install_item: tauri::menu::MenuItem<tauri::Wry>,
     install_code_item: Option<tauri::menu::MenuItem<tauri::Wry>>,
-}
-
-fn default_db_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("reasons.db")
 }
 
 fn claude_config_path() -> Option<PathBuf> {
@@ -123,17 +116,20 @@ fn install_to_claude(db_path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-async fn start_mcp_server(db_path: PathBuf, port: u16, cancel_token: CancellationToken) {
+async fn start_mcp_server(domain_list: Vec<(String, PathBuf)>, default_domain: String, port: u16, cancel_token: CancellationToken) {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
 
-    if !db_path.exists() {
-        if let Err(e) = reasons_core::db::init_db(&db_path) {
-            eprintln!("Failed to initialize database: {}", e);
-            return;
+    for (name, path) in &domain_list {
+        if !path.exists() {
+            eprintln!("Initializing database for domain '{}': {}", name, path.display());
+            if let Err(e) = reasons_core::db::init_db(path) {
+                eprintln!("Failed to initialize database for domain '{}': {}", name, e);
+                return;
+            }
         }
     }
 
-    if let Err(e) = reasons_core::mcp::run_http_server(db_path, addr, cancel_token).await {
+    if let Err(e) = reasons_core::mcp::run_http_server(domain_list, default_domain, addr, cancel_token).await {
         eprintln!("MCP server error: {}", e);
     }
 }
@@ -144,14 +140,21 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let db_path = default_db_path();
+            reasons_core::config::ensure_default_config();
+            let (domain_list, default_domain) = reasons_core::config::load_domains();
             let port: u16 = 6519;
             let cancel_token = CancellationToken::new();
             let status_item = MenuItemBuilder::new(format!("Status: running on port {}", port))
                 .id("status")
                 .enabled(false)
                 .build(app)?;
-            let db_item = MenuItemBuilder::new(format!("Database: {}", db_path.display()))
+
+            let domains_label = if domain_list.len() == 1 {
+                format!("Database: {}", domain_list[0].1.display())
+            } else {
+                format!("Domains: {} configured (default: {})", domain_list.len(), default_domain)
+            };
+            let db_item = MenuItemBuilder::new(domains_label)
                 .id("db_path")
                 .enabled(false)
                 .build(app)?;
@@ -223,7 +226,7 @@ pub fn run() {
                             let app = app_handle.clone();
                             tauri::async_runtime::spawn(async move {
                                 let s = server.lock().await;
-                                let db_path = s.db_path.clone();
+                                let db_path = s.default_db_path.clone();
                                 drop(s);
                                 match install_to_claude(&db_path) {
                                     Ok(()) => {
@@ -244,7 +247,7 @@ pub fn run() {
                             let app = app_handle.clone();
                             tauri::async_runtime::spawn(async move {
                                 let s = server.lock().await;
-                                let db_path = s.db_path.clone();
+                                let db_path = s.default_db_path.clone();
                                 drop(s);
                                 match install_to_claude_code(&db_path) {
                                     Ok(()) => {
@@ -266,11 +269,16 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            let default_db = domain_list.iter()
+                .find(|(name, _)| name == &default_domain)
+                .map(|(_, path)| path.clone())
+                .unwrap_or_else(|| domain_list[0].1.clone());
+
             let state = AppState {
                 server: Arc::new(Mutex::new(ServerState {
                     running: true,
                     port,
-                    db_path: db_path.clone(),
+                    default_db_path: default_db,
                     cancel_token: cancel_token.clone(),
                 })),
                 install_item: install_item.clone(),
@@ -278,8 +286,9 @@ pub fn run() {
             };
             app.manage(state);
 
+            let default_clone = default_domain.clone();
             tauri::async_runtime::spawn(async move {
-                start_mcp_server(db_path, port, cancel_token).await;
+                start_mcp_server(domain_list, default_clone, port, cancel_token).await;
             });
 
             Ok(())

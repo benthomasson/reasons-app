@@ -2674,6 +2674,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "dirs",
  "rmcp",
  "rusqlite",
  "schemars 1.2.1",
@@ -2682,6 +2683,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "toml 0.8.2",
 ]
 
 [[package]]
