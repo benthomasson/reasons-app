@@ -1,0 +1,18 @@
+[package]
+name = "reasons-app"
+version = "0.1.0"
+edition = "2021"
+description = "Reasons desktop app - MCP server with menu bar"
+license = "MIT"
+
+[dependencies]
+reasons-core = { path = "../reasons-core" }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+tokio-util = "0.7"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

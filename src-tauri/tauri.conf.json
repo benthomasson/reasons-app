@@ -1,0 +1,27 @@
+{
+  "productName": "Reasons",
+  "version": "0.1.0",
+  "identifier": "com.reasons.app",
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "icon": [
+      "icons/icon.png"
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
+}

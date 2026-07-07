@@ -1,0 +1,18 @@
+[package]
+name = "reasons-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Truth Maintenance System CLI"
+license = "MIT"
+
+[[bin]]
+name = "reasons"
+path = "src/main.rs"
+
+[dependencies]
+reasons-core = { path = "../reasons-core" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+
+[dev-dependencies]
+tempfile = "3"
