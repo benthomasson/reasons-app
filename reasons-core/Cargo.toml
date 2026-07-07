@@ -14,7 +14,6 @@ rmcp = { version = "2", features = ["server", "macros", "transport-io", "transpo
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "sync", "net"] }
 schemars = "1"
 axum = "0.8"
-axum-server = { version = "0.8", features = ["tls-rustls"] }
 tokio-util = "0.7"
 
 [dev-dependencies]
