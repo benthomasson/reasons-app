@@ -20,6 +20,9 @@ struct SearchParams {
     #[schemars(description = "Neighbor expansion depth (default 1)")]
     #[serde(default = "default_depth")]
     depth: usize,
+    #[schemars(description = "Include OUT (retracted) beliefs in results (default: false)")]
+    #[serde(default)]
+    include_out: bool,
     #[schemars(description = "Domain name (database) to query. Use 'domains' tool to list available domains.")]
     #[serde(default)]
     domain: Option<String>,
@@ -203,7 +206,7 @@ impl ReasonsServer {
         tokio::task::spawn_blocking(move || {
             let domains = domains.lock().unwrap();
             let conn = &domains[&domain];
-            search_impl(conn, &params.query, &params.format, params.depth)
+            search_impl(conn, &params.query, &params.format, params.depth, params.include_out)
         }).await.unwrap()
     }
 
@@ -352,7 +355,7 @@ impl ReasonsServer {
 
 // --- Implementation functions that return String instead of printing ---
 
-fn search_impl(conn: &Connection, query: &str, output_format: &str, depth: usize) -> String {
+fn search_impl(conn: &Connection, query: &str, output_format: &str, depth: usize, include_out: bool) -> String {
     let words: Vec<String> = query
         .split_whitespace()
         .map(|w| w.to_lowercase())
@@ -396,8 +399,15 @@ fn search_impl(conn: &Connection, query: &str, output_format: &str, depth: usize
     let mut nodes = Vec::new();
     for id in &expanded {
         if let Ok(Some(node)) = db::load_node(conn, id) {
+            if !include_out && node.truth_value == "OUT" {
+                continue;
+            }
             nodes.push(node);
         }
+    }
+
+    if nodes.is_empty() {
+        return "No results found.".to_string();
     }
 
     match output_format {
