@@ -10,7 +10,6 @@ use tauri::{
     Manager,
 };
 
-const CLAUDE_CONFIG_PATH: &str = "Library/Application Support/Claude/claude_desktop_config.json";
 struct ServerState {
     running: bool,
     port: u16,
@@ -25,7 +24,12 @@ struct AppState {
 }
 
 fn claude_config_path() -> Option<PathBuf> {
-    Some(dirs::home_dir()?.join(CLAUDE_CONFIG_PATH))
+    #[cfg(target_os = "macos")]
+    { Some(dirs::home_dir()?.join("Library/Application Support/Claude/claude_desktop_config.json")) }
+    #[cfg(target_os = "windows")]
+    { Some(dirs::config_dir()?.join("Claude/claude_desktop_config.json")) }
+    #[cfg(target_os = "linux")]
+    { Some(dirs::config_dir()?.join("Claude/claude_desktop_config.json")) }
 }
 
 fn is_installed_in_claude() -> bool {
@@ -46,7 +50,8 @@ fn reasons_binary_path() -> PathBuf {
 }
 
 fn has_claude_code() -> bool {
-    std::process::Command::new("which")
+    let cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+    std::process::Command::new(cmd)
         .arg("claude")
         .output()
         .map(|o| o.status.success())
