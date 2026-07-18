@@ -21,7 +21,7 @@ jobs:
             bundle: app,dmg
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            bundle: deb,appimage
+            bundle: deb,appimage,rpm
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bundle: msi,nsis
@@ -44,7 +44,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            rpm
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked
@@ -69,6 +70,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/bundle/deb/*.deb
             target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            target/${{ matrix.target }}/release/bundle/rpm/*.rpm
 
       - name: Upload artifacts (Windows)
         if: runner.os == 'Windows'
